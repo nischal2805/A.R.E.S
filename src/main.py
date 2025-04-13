@@ -1,64 +1,91 @@
 import cv2
 import time
-from camera.threaded_camera import ThreadedCamera  # Use threaded camera
+import numpy as np
 from detection.yolo_detector import YOLODetector
+from detection.tracker import PersonTracker
 from detection.eye_tracker import EyeTracker
 from visualization.overlay import TargetingOverlay
 from config.settings import *
 
 def main():
-    # Initialize components
-    camera = ThreadedCamera(CAMERA_IP, FRAME_WIDTH, FRAME_HEIGHT)
-    camera.start()
-    
     detector = YOLODetector(YOLO_MODEL)
+    tracker = PersonTracker(max_disappeared=10)  # New tracker component
     eye_tracker = EyeTracker(EYE_OFFSET_Y, EYE_TRACKING_SMOOTHING)
     overlay = TargetingOverlay(TARGET_CIRCLE_RADIUS, OVERLAY_CIRCLE_RADIUS, 
                               TARGET_COLOR, OVERLAY_COLOR)
     
+    # Open camera
+    camera = cv2.VideoCapture(CAMERA_IP)
+    if not camera.isOpened():
+        print("Error: Could not open camera. Check your camera IP and connection.")
+        return
+    
     # Performance tracking
-    prev_time = 0
+    prev_time = time.time()
+    detection_interval = SKIP_FRAMES  # Run detection every N frames
     frame_count = 0
     
     while True:
-        # Capture frame from camera
-        frame = camera.get_frame()
-        if frame is None:
-            time.sleep(0.01)  # Sleep briefly to prevent CPU overload
+        # Capture frame
+        ret, frame = camera.read()
+        if not ret:
+            print("Error: Failed to capture frame")
+            time.sleep(0.5)
             continue
         
-        # Skip frames for better performance
-        frame_count += 1
-        if frame_count % (SKIP_FRAMES + 1) != 0:
-            # Still display frame but skip detection
-            cv2.imshow("Targeting System", frame)
-            if cv2.waitKey(1) & 0xFF == ord('q'):
-                break
-            continue
+        # Resize for better performance
+        frame = cv2.resize(frame, (FRAME_WIDTH, FRAME_HEIGHT))
         
-        # Detect humans in the frame
-        detections = detector.detect_humans(frame)
+        # Only run detection every few frames to improve performance
+        run_detection = frame_count % detection_interval == 0
         
-        # Track eyes and find forehead targets for each detection
-        targets = eye_tracker.find_targets(frame, detections)
+        if run_detection:
+            # Detect humans
+            detected_humans = detector.detect_humans(frame)
+            
+            # Update tracker with new detections
+            tracked_humans = tracker.update(frame, detected_humans)
+            
+            # Track eyes and find targets
+            targets = eye_tracker.find_targets(frame, tracked_humans)
+        else:
+            # Just update tracker positions without new detections
+            tracked_humans = tracker.update(frame, [])
+            
+            # Update targets based on tracking only
+            targets = eye_tracker.find_targets(frame, tracked_humans)
         
-        # Apply targeting overlay
-        result_frame = overlay.draw_targeting(frame, targets)
+        # Create visual overlay
+        result = overlay.draw_targeting(frame, targets)
         
-        # Calculate and display FPS
+        # Show lock-on status
+        for target in targets:
+            if 'locked' in target and target['locked']:
+                # Draw lock-on indicator
+                x, y = target['target']
+                cv2.putText(result, "LOCKED", (x-30, y-30), 
+                           cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 255), 2)
+        
+        # Calculate FPS
         current_time = time.time()
-        fps = 1 / (current_time - prev_time) if prev_time > 0 else 0
+        fps = 1 / (current_time - prev_time)
         prev_time = current_time
-        cv2.putText(result_frame, f"FPS: {int(fps)}", (10, 30), 
+        
+        # Display FPS
+        cv2.putText(result, f"FPS: {int(fps)}", (10, 30), 
                    cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 0), 2)
         
-        # Display the result
-        cv2.imshow("Targeting System", result_frame)
+        # Display result
+        cv2.imshow("Targeting System", result)
         
-        # Break loop on 'q' key press
+        # Update frame counter
+        frame_count += 1
+        
+        # Exit on 'q' key
         if cv2.waitKey(1) & 0xFF == ord('q'):
             break
     
+    # Clean up
     camera.release()
     cv2.destroyAllWindows()
 
