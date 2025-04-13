@@ -1,0 +1,16 @@
+﻿# Python cache files
+__pycache__/
+*.py[cod]
+*.class
+
+# Model files
+*.pt
+*.pth
+*.onnx
+*.mlmodel
+src/*.pt
+
+# Virtual environments
+venv/
+env/
+.env
